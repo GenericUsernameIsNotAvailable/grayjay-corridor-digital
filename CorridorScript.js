@@ -2,6 +2,7 @@ const PLATFORM = "Corridor Digital";
 const CACHE_HOST = "https://content-cache.corridordigital.com";
 const CONTENT_HOST = "https://content.corridordigital.com";
 const WEB_HOST = "https://www.corridordigital.com";
+const DEFAULT_FREE_ROW_ID = 7;
 
 const DEFAULT_HEADERS = {
   "Accept": "application/json, text/plain, */*",
@@ -11,6 +12,7 @@ const DEFAULT_HEADERS = {
 };
 
 let config = {};
+let cachedFreeRowId = null;
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -40,33 +42,73 @@ function fetchJson(url) {
   }
 }
 
-function pickBestImage(images) {
-  if (!Array.isArray(images) || images.length === 0) return "";
-  const preferred = images.find(img =>
-    img && img.url && /thumb|landscape|wide|16x9|poster|banner/i.test(img.type || "")
-  );
-  if (preferred && preferred.url) return preferred.url;
-
-  const sorted = images
-    .filter(img => img && typeof img.url === "string" && img.url.length > 0)
-    .slice()
-    .sort((a, b) => (b.width || 0) - (a.width || 0));
-
-  return sorted.length > 0 ? sorted[0].url : "";
+function getFreeRowId() {
+  if (cachedFreeRowId !== null) return cachedFreeRowId;
+  try {
+    const home = fetchJson(`${CACHE_HOST}/pages/v1/home?pageRowSize=1`);
+    const rows = Array.isArray(home.pageRows) ? home.pageRows : [];
+    const freeRow = rows.find(r => r && r.type === "free-media-list" && r.id);
+    cachedFreeRowId = freeRow ? freeRow.id : DEFAULT_FREE_ROW_ID;
+  } catch (e) {
+    cachedFreeRowId = DEFAULT_FREE_ROW_ID;
+  }
+  return cachedFreeRowId;
 }
 
-function buildThumbnails(images, fallbackUrl) {
+function isAnimatedPreview(img) {
+  if (!img || typeof img.url !== "string" || !img.url.length) return true;
+  const type = (img.type || "").toLowerCase();
+  const url = img.url.toLowerCase();
+
+  if (type === "media-preview") return true;
+  if (/preview|anim|hover|motion|gif/i.test(type)) return true;
+  if (/\.gif(\?|$)/i.test(url)) return true;
+  if (/[?&]a=true/i.test(url) || /\/previews?\//i.test(url)) return true;
+
+  return false;
+}
+
+function pickStaticImage(images, preferredTypes) {
+  if (!Array.isArray(images) || images.length === 0) return "";
+  const staticImgs = images.filter(img => !isAnimatedPreview(img));
+  if (staticImgs.length === 0) return "";
+
+  const order = preferredTypes || ["thumbnail", "hero-web", "packshot", "hero-mobile"];
+  for (const t of order) {
+    const match = staticImgs.find(img => (img.type || "").toLowerCase() === t);
+    if (match && match.url) return match.url;
+  }
+
+  const sorted = staticImgs.slice().sort((a, b) => (b.width || 0) - (a.width || 0));
+  return sorted[0].url;
+}
+
+function buildStaticThumbnails(images, fallbackUrl) {
   const list = [];
-  if (Array.isArray(images)) {
-    for (const img of images) {
-      if (img && typeof img.url === "string" && img.url.length > 0) {
-        list.push(new Thumbnail(img.url, img.width || 0));
+
+  if (Array.isArray(images) && images.length > 0) {
+    const staticImgs = images.filter(img => !isAnimatedPreview(img));
+    const exactThumb = staticImgs.find(img => (img.type || "").toLowerCase() === "thumbnail");
+
+    if (exactThumb) {
+      list.push(new Thumbnail(exactThumb.url, exactThumb.width || 720));
+    } else if (staticImgs.length > 0) {
+      const hasTyped = staticImgs.some(img => typeof img.type === "string" && img.type.length > 0);
+      if (hasTyped) {
+        const best = pickStaticImage(staticImgs, ["thumbnail", "hero-web", "packshot", "hero-mobile"]);
+        if (best) list.push(new Thumbnail(best, 720));
+      } else {
+        for (const img of staticImgs) {
+          list.push(new Thumbnail(img.url, img.width || 0));
+        }
       }
     }
   }
-  if (list.length === 0 && fallbackUrl) {
+
+  if (list.length === 0 && fallbackUrl && !isAnimatedPreview({ url: fallbackUrl })) {
     list.push(new Thumbnail(fallbackUrl, 0));
   }
+
   return new Thumbnails(list);
 }
 
@@ -97,13 +139,6 @@ function parseUnixDate(dateStr) {
   return isNaN(ms) ? 0 : Math.floor(ms / 1000);
 }
 
-function isPublicItem(item) {
-  if (!item || typeof item !== "object") return false;
-  if (item.subscriptionOnly === true) return false;
-  if (item.exclusive === true) return false;
-  return true;
-}
-
 function getSeasonUrl(seasonId) {
   return `${WEB_HOST}/season/${seasonId}`;
 }
@@ -114,12 +149,13 @@ function getWatchUrl(videoId) {
 
 function mapSeasonToChannel(item) {
   const seasonId = item.seasonId || item.id;
-  const thumb = pickBestImage(item.images);
+  const thumb = pickStaticImage(item.images, ["thumbnail", "packshot", "hero-web"]);
+  const banner = pickStaticImage(item.images, ["hero-web", "thumbnail", "packshot"]);
   return new PlatformChannel({
     id: new PlatformID(PLATFORM, `season-${seasonId}`, config.id),
     name: item.title || item.name || `Show ${seasonId}`,
     thumbnail: thumb,
-    banner: thumb,
+    banner: banner || thumb,
     subscribers: 0,
     description: item.shortDescription || "",
     url: getSeasonUrl(seasonId),
@@ -133,16 +169,17 @@ function mapEpisodeToVideo(ep, seasonName, seasonThumb) {
   const authorName = seasonName || "Corridor Digital";
   const authorUrl = seasonId ? getSeasonUrl(seasonId) : WEB_HOST;
   const authorId = seasonId ? `season-${seasonId}` : "corridor-digital";
+  const badgeThumb = pickStaticImage(ep.images, ["channel-badge"]) || seasonThumb || "";
 
   return new PlatformVideo({
     id: new PlatformID(PLATFORM, String(videoId), config.id),
     name: ep.title || `Episode ${videoId}`,
-    thumbnails: buildThumbnails(ep.images, seasonThumb),
+    thumbnails: buildStaticThumbnails(ep.images, seasonThumb),
     author: new PlatformAuthorLink(
       new PlatformID(PLATFORM, authorId, config.id),
       authorName,
       authorUrl,
-      seasonThumb || ""
+      badgeThumb
     ),
     uploadDate: parseUnixDate(ep.datePublished),
     duration: parseDurationSeconds(ep.duration),
@@ -152,18 +189,43 @@ function mapEpisodeToVideo(ep, seasonName, seasonThumb) {
   });
 }
 
-function collectPublicShows() {
+function fetchAllFreeVideos() {
+  const rowId = getFreeRowId();
+  const all = [];
+  const seen = new Set();
+
+  for (let page = 1; page <= 20; page++) {
+    let items;
+    try {
+      items = fetchJson(`${CACHE_HOST}/pages/v1/row/${rowId}?count=20&page=${page}`);
+    } catch (e) {
+      break;
+    }
+    if (!Array.isArray(items) || items.length === 0) break;
+
+    for (const item of items) {
+      const vid = String(item.id || item.mediaId || "");
+      if (vid && !seen.has(vid)) {
+        seen.add(vid);
+        all.push(item);
+      }
+    }
+    if (items.length < 20) break;
+  }
+
+  return all;
+}
+
+function collectShows() {
   const showsPage = fetchJson(`${CACHE_HOST}/pages/v1/shows?pageRowSize=20`);
   const rows = Array.isArray(showsPage.pageRows) ? showsPage.pageRows : [];
   const seenSeasons = new Map();
 
   for (const row of rows) {
-    if (row.exclusive === true) continue;
-
     const initialMedia = Array.isArray(row.media) ? row.media : [];
     for (const item of initialMedia) {
       const sId = item.seasonId || item.id;
-      if (sId && isPublicItem(item) && !seenSeasons.has(sId)) {
+      if (sId && !seenSeasons.has(sId)) {
         seenSeasons.set(sId, item);
       }
     }
@@ -179,7 +241,7 @@ function collectPublicShows() {
         if (!Array.isArray(extra) || extra.length === 0) break;
         for (const item of extra) {
           const sId = item.seasonId || item.id;
-          if (sId && isPublicItem(item) && !seenSeasons.has(sId)) {
+          if (sId && !seenSeasons.has(sId)) {
             seenSeasons.set(sId, item);
           }
         }
@@ -192,45 +254,49 @@ function collectPublicShows() {
 }
 
 // ---------------------------------------------------------------------------
-// Home Feed (Public Episodes from Public Shows)
+// Home Feed (Properly paginated Free to Watch catalogue)
 // ---------------------------------------------------------------------------
 
-source.getHome = function (continuationToken) {
-  const shows = collectPublicShows();
-  const pageIndex = continuationToken && typeof continuationToken.index === "number"
-    ? continuationToken.index
-    : 0;
-
-  const batchSize = 3;
-  const slice = shows.slice(pageIndex, pageIndex + batchSize);
-  const videos = [];
-
-  for (const show of slice) {
-    const seasonId = show.seasonId || show.id;
-    try {
-      const seasonData = fetchJson(`${CACHE_HOST}/channels/v16/season/${seasonId}`);
-      if (seasonData.exclusive === true) continue;
-      const seasonName = seasonData.name || show.title || "Corridor Digital";
-      const seasonThumb = pickBestImage(seasonData.images) || pickBestImage(show.images);
-      const episodes = Array.isArray(seasonData.media) ? seasonData.media : [];
-
-      for (const ep of episodes) {
-        if (!isPublicItem(ep)) continue;
-        ep.seasonId = seasonId;
-        videos.push(mapEpisodeToVideo(ep, seasonName, seasonThumb));
-      }
-    } catch (e) {
-      // Skip seasons that fail to load
-    }
+class CorridorFreePager extends VideoPager {
+  constructor(results, hasMore, nextPageNum) {
+    super(results, hasMore, { page: nextPageNum });
+    this.nextPageNum = nextPageNum;
   }
 
-  const nextIndex = pageIndex + batchSize;
-  const hasMore = nextIndex < shows.length;
-  return new VideoPager(videos, hasMore, hasMore ? { index: nextIndex } : null);
+  nextPage() {
+    if (!this.hasMore) {
+      return new CorridorFreePager([], false, this.nextPageNum);
+    }
+    return fetchFreeHomePage(this.nextPageNum);
+  }
+}
+
+function fetchFreeHomePage(page) {
+  const rowId = getFreeRowId();
+  const pageSize = 20;
+  const items = fetchJson(`${CACHE_HOST}/pages/v1/row/${rowId}?count=${pageSize}&page=${page}`);
+  const list = Array.isArray(items) ? items : [];
+  const videos = [];
+
+  for (const ep of list) {
+    const vid = ep.id || ep.mediaId;
+    if (!vid) continue;
+    videos.push(mapEpisodeToVideo(ep, "Corridor Digital", ""));
+  }
+
+  const hasMore = list.length >= pageSize;
+  return new CorridorFreePager(videos, hasMore, page + 1);
+}
+
+source.getHome = function (continuationToken) {
+  const page = continuationToken && typeof continuationToken.page === "number"
+    ? continuationToken.page
+    : 1;
+  return fetchFreeHomePage(page);
 };
 
 // ---------------------------------------------------------------------------
-// Search (Shows & Episodes)
+// Search (Free videos + show-name matching intersected with Free list)
 // ---------------------------------------------------------------------------
 
 source.getSearchCapabilities = function () {
@@ -251,41 +317,78 @@ source.search = function (query, type, order, filters, continuationToken) {
     return new VideoPager([], false);
   }
 
-  const shows = collectPublicShows();
+  const freeVideos = fetchAllFreeVideos();
+  const freeMap = new Map();
+  for (const ep of freeVideos) {
+    const vid = String(ep.id || ep.mediaId || "");
+    if (vid) freeMap.set(vid, ep);
+  }
+
   const results = [];
-  const seenVideoIds = new Set();
+  const seenIds = new Set();
 
-  for (const show of shows) {
-    const seasonId = show.seasonId || show.id;
-    let seasonData;
-    try {
-      seasonData = fetchJson(`${CACHE_HOST}/channels/v16/season/${seasonId}`);
-    } catch (e) {
-      continue;
+  // 1. Direct match on free video title/description
+  for (const ep of freeVideos) {
+    const vid = String(ep.id || ep.mediaId || "");
+    const title = (ep.title || "").toLowerCase();
+    const desc = (ep.shortDescription || "").toLowerCase();
+    if (title.includes(q) || desc.includes(q)) {
+      seenIds.add(vid);
+      results.push(mapEpisodeToVideo(ep, "Corridor Digital", ""));
     }
-    if (seasonData.exclusive === true) continue;
+  }
 
-    const seasonName = seasonData.name || show.title || "";
-    const seasonThumb = pickBestImage(seasonData.images) || pickBestImage(show.images);
-    const showMatches =
-      seasonName.toLowerCase().includes(q) ||
-      (show.shortDescription || "").toLowerCase().includes(q);
+  // 2. Match show/season names (e.g. "Son of a Dungeon") and include their free episodes
+  try {
+    const shows = collectShows();
+    const matchedShows = shows.filter(s =>
+      (s.title || s.name || "").toLowerCase().includes(q) ||
+      (s.shortDescription || "").toLowerCase().includes(q)
+    );
 
-    const episodes = Array.isArray(seasonData.media) ? seasonData.media : [];
-    for (const ep of episodes) {
-      if (!isPublicItem(ep)) continue;
-      const vid = ep.id || ep.mediaId;
-      if (!vid || seenVideoIds.has(vid)) continue;
+    const visitedSeasons = new Set();
+    for (const show of matchedShows) {
+      const seasonId = show.seasonId || show.id;
+      if (!seasonId || visitedSeasons.has(String(seasonId))) continue;
+      visitedSeasons.add(String(seasonId));
 
-      const epTitle = (ep.title || "").toLowerCase();
-      const epDesc = (ep.shortDescription || "").toLowerCase();
+      let seasonData;
+      try {
+        seasonData = fetchJson(`${CACHE_HOST}/channels/v16/season/${seasonId}`);
+      } catch (e) {
+        continue;
+      }
 
-      if (showMatches || epTitle.includes(q) || epDesc.includes(q)) {
-        seenVideoIds.add(vid);
-        ep.seasonId = seasonId;
-        results.push(mapEpisodeToVideo(ep, seasonName, seasonThumb));
+      const seasonQueue = [seasonData];
+      const siblings = seasonData.series && Array.isArray(seasonData.series.seasons)
+        ? seasonData.series.seasons
+        : [];
+
+      for (const sib of siblings) {
+        if (!sib.seasonId || visitedSeasons.has(String(sib.seasonId))) continue;
+        visitedSeasons.add(String(sib.seasonId));
+        try {
+          seasonQueue.push(fetchJson(`${CACHE_HOST}/channels/v16/season/${sib.seasonId}`));
+        } catch (e) {
+          // Skip failed sibling season
+        }
+      }
+
+      for (const sd of seasonQueue) {
+        const sName = sd.name || show.title || "Corridor Digital";
+        const sThumb = pickStaticImage(sd.images) || pickStaticImage(show.images);
+        const eps = Array.isArray(sd.media) ? sd.media : [];
+        for (const ep of eps) {
+          const vid = String(ep.id || ep.mediaId || "");
+          if (!vid || seenIds.has(vid) || !freeMap.has(vid)) continue;
+          seenIds.add(vid);
+          ep.seasonId = sd.id || seasonId;
+          results.push(mapEpisodeToVideo(ep, sName, sThumb));
+        }
       }
     }
+  } catch (e) {
+    // Keep direct matches even if show lookup fails
   }
 
   return new VideoPager(results, false);
@@ -293,7 +396,7 @@ source.search = function (query, type, order, filters, continuationToken) {
 
 source.searchChannels = function (query, continuationToken) {
   const q = (query || "").trim().toLowerCase();
-  const shows = collectPublicShows();
+  const shows = collectShows();
   const matched = shows
     .filter(s =>
       !q ||
@@ -306,7 +409,7 @@ source.searchChannels = function (query, continuationToken) {
 };
 
 // ---------------------------------------------------------------------------
-// Shows / Seasons as Channels
+// Shows / Seasons as Channels (Filtered to playable free episodes)
 // ---------------------------------------------------------------------------
 
 source.isChannelUrl = function (url) {
@@ -321,11 +424,8 @@ source.getChannel = function (url) {
   const seasonId = match[2];
   const seasonData = fetchJson(`${CACHE_HOST}/channels/v16/season/${seasonId}`);
 
-  if (seasonData.exclusive === true) {
-    throw new ScriptException("UNSUPPORTED", "This show is marked as exclusive.");
-  }
-
-  const thumb = pickBestImage(seasonData.images);
+  const thumb = pickStaticImage(seasonData.images, ["thumbnail", "packshot", "hero-web"]);
+  const banner = pickStaticImage(seasonData.images, ["hero-web", "thumbnail", "packshot"]);
   const seasonList = seasonData.series && Array.isArray(seasonData.series.seasons)
     ? seasonData.series.seasons
     : [];
@@ -338,7 +438,7 @@ source.getChannel = function (url) {
     id: new PlatformID(PLATFORM, `season-${seasonId}`, config.id),
     name: seasonData.name || `Season ${seasonId}`,
     thumbnail: thumb,
-    banner: thumb,
+    banner: banner || thumb,
     subscribers: 0,
     description: seasonSummary,
     url: getSeasonUrl(seasonId),
@@ -354,21 +454,19 @@ source.getChannelContents = function (url, type, order, filters, continuationTok
   const seasonId = match[2];
   const seasonData = fetchJson(`${CACHE_HOST}/channels/v16/season/${seasonId}`);
 
-  if (seasonData.exclusive === true) {
-    return new VideoPager([], false);
-  }
+  const freeVideos = fetchAllFreeVideos();
+  const freeIds = new Set(freeVideos.map(v => String(v.id || v.mediaId || "")));
 
   const seasonName = seasonData.name || `Season ${seasonId}`;
-  const seasonThumb = pickBestImage(seasonData.images);
+  const seasonThumb = pickStaticImage(seasonData.images);
   const episodes = Array.isArray(seasonData.media) ? seasonData.media : [];
 
   const videos = [];
   const seenIds = new Set();
 
   for (const ep of episodes) {
-    if (!isPublicItem(ep)) continue;
-    const vid = ep.id || ep.mediaId;
-    if (!vid || seenIds.has(vid)) continue;
+    const vid = String(ep.id || ep.mediaId || "");
+    if (!vid || seenIds.has(vid) || !freeIds.has(vid)) continue;
     seenIds.add(vid);
     ep.seasonId = seasonId;
     videos.push(mapEpisodeToVideo(ep, seasonName, seasonThumb));
@@ -382,15 +480,13 @@ source.getChannelContents = function (url, type, order, filters, continuationTok
     if (!sib.seasonId || String(sib.seasonId) === String(seasonId)) continue;
     try {
       const sibData = fetchJson(`${CACHE_HOST}/channels/v16/season/${sib.seasonId}`);
-      if (sibData.exclusive === true) continue;
       const sibName = sibData.name || sib.name || seasonName;
-      const sibThumb = pickBestImage(sibData.images) || seasonThumb;
+      const sibThumb = pickStaticImage(sibData.images) || seasonThumb;
       const sibEps = Array.isArray(sibData.media) ? sibData.media : [];
 
       for (const ep of sibEps) {
-        if (!isPublicItem(ep)) continue;
-        const vid = ep.id || ep.mediaId;
-        if (!vid || seenIds.has(vid)) continue;
+        const vid = String(ep.id || ep.mediaId || "");
+        if (!vid || seenIds.has(vid) || !freeIds.has(vid)) continue;
         seenIds.add(vid);
         ep.seasonId = sib.seasonId;
         videos.push(mapEpisodeToVideo(ep, `${seasonName} - ${sibName}`, sibThumb));
@@ -404,7 +500,7 @@ source.getChannelContents = function (url, type, order, filters, continuationTok
 };
 
 // ---------------------------------------------------------------------------
-// Video Details & Free DASH Playback
+// Video Details & Free Playback
 // ---------------------------------------------------------------------------
 
 source.isContentDetailsUrl = function (url) {
@@ -432,7 +528,7 @@ source.getContentDetails = function (url) {
     try {
       const seasonData = fetchJson(`${CACHE_HOST}/channels/v16/season/${meta.seasonId}`);
       seasonName = seasonData.name || seasonName;
-      seasonThumb = pickBestImage(seasonData.images);
+      seasonThumb = pickStaticImage(seasonData.images);
       const mediaList = Array.isArray(seasonData.media) ? seasonData.media : [];
       seasonEp = mediaList.find(m =>
         String(m.id) === String(videoId) || String(m.mediaId) === String(videoId)
@@ -442,55 +538,72 @@ source.getContentDetails = function (url) {
     }
   }
 
-  if (seasonEp && !isPublicItem(seasonEp)) {
-    throw new ScriptException("UNSUPPORTED", "This episode requires a Corridor Digital subscription.");
-  }
-
   const durationSec = seasonEp ? parseDurationSeconds(seasonEp.duration) : 0;
   const title = meta.title || (seasonEp && seasonEp.title) || `Episode ${videoId}`;
-  let description = meta.description || meta.shortDescription || (seasonEp && seasonEp.shortDescription) || "";
+  const description = meta.description || meta.shortDescription || (seasonEp && seasonEp.shortDescription) || "";
   const uploadDate = parseUnixDate(meta.datePublished || (seasonEp && seasonEp.datePublished));
   let posterFallback = seasonThumb;
 
-  // 3. Attempt to resolve unencrypted free DASH playback
-  let dashSource = null;
+  // 3. Request free playback endpoint (/v5/video/{id}/free?platform=Web)
   const playResp = http.GET(`${CONTENT_HOST}/v5/video/${videoId}/free?platform=Web`, DEFAULT_HEADERS);
 
-  if (playResp.isOk) {
-    try {
-      const playData = JSON.parse(playResp.body);
-      if (playData.poster) {
-        posterFallback = playData.poster;
-      }
-      if (playData.dashUrl) {
-        const mpdResp = http.GET(playData.dashUrl, {
-          "Origin": "https://www.corridordigital.com",
-          "Referer": "https://www.corridordigital.com/"
-        });
-        if (mpdResp.isOk) {
-          const mpdXml = mpdResp.body || "";
-          const isDrmProtected =
-            /<ContentProtection/i.test(mpdXml) ||
-            /edef8ba9-79d6-4ace-a3c8-27dcd51d21ed/i.test(mpdXml) ||
-            /cenc/i.test(mpdXml);
+  if (!playResp.isOk) {
+    const bodyText = (playResp.body || "").trim();
+    if (playResp.code === 400 || /not available under a free account/i.test(bodyText)) {
+      throw new ScriptException(
+        "UNAVAILABLE",
+        "This episode requires a paid Corridor Digital subscription and is not available on the free tier."
+      );
+    }
+    throw new ScriptException("HTTP_ERROR", `Free playback request failed (HTTP ${playResp.code}).`);
+  }
 
-          if (!isDrmProtected) {
-            dashSource = new DashSource({
-              name: "DASH (Auto)",
-              duration: durationSec,
-              url: playData.dashUrl
-            });
-          } else {
-            description = `[Playback unavailable: stream is Widevine DRM-protected]\n\n${description}`;
-          }
-        }
-      }
-    } catch (e) {
-      // Preserve metadata even if playback manifest parsing fails
+  let playData;
+  try {
+    playData = JSON.parse(playResp.body);
+  } catch (e) {
+    throw new ScriptException("PARSE_ERROR", "Invalid playback response JSON.");
+  }
+
+  if (playData.poster) {
+    posterFallback = playData.poster;
+  }
+
+  const videoSources = [];
+  if (playData.dashUrl) {
+    const mpdResp = http.GET(playData.dashUrl, {
+      "Origin": "https://www.corridordigital.com",
+      "Referer": "https://www.corridordigital.com/"
+    });
+
+    const mpdXml = mpdResp.isOk ? (mpdResp.body || "") : "";
+    const isDrmProtected =
+      /<ContentProtection/i.test(mpdXml) ||
+      /edef8ba9-79d6-4ace-a3c8-27dcd51d21ed/i.test(mpdXml) ||
+      /cenc/i.test(mpdXml);
+
+    if (isDrmProtected && playData.widevineUrl && typeof DashWidevineSource === "function") {
+      videoSources.push(new DashWidevineSource({
+        name: "DASH (Widevine)",
+        duration: durationSec,
+        url: playData.dashUrl,
+        licenseUri: playData.widevineUrl
+      }));
+    } else if (!isDrmProtected) {
+      videoSources.push(new DashSource({
+        name: "DASH (Auto)",
+        duration: durationSec,
+        url: playData.dashUrl
+      }));
+    } else {
+      throw new ScriptException(
+        "UNSUPPORTED",
+        "This episode requires Widevine DRM, which is not supported by this version of Grayjay."
+      );
     }
   }
 
-  const thumbnails = buildThumbnails(metaImages, posterFallback);
+  const thumbnails = buildStaticThumbnails(metaImages, posterFallback);
   const authorId = meta.seasonId ? `season-${meta.seasonId}` : "corridor-digital";
   const authorUrl = meta.seasonId ? getSeasonUrl(meta.seasonId) : WEB_HOST;
 
@@ -510,8 +623,7 @@ source.getContentDetails = function (url) {
     url: getWatchUrl(videoId),
     isLive: false,
     description: description,
-    video: new UnMuxVideoSourceDescriptor([], []),
-    dash: dashSource
+    video: new VideoSourceDescriptor(videoSources)
   });
 };
 

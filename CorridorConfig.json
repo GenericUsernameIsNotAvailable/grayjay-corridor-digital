@@ -6,10 +6,10 @@
   "sourceUrl": "https://raw.githubusercontent.com/GenericUsernameIsNotAvailable/grayjay-corridor-digital/main/CorridorConfig.json",
   "repositoryUrl": "https://github.com/GenericUsernameIsNotAvailable/grayjay-corridor-digital",
   "scriptUrl": "./CorridorScript.js",
-  "version": 1,
+  "version": 2,
   "iconUrl": "./corridor.png",
   "id": "corridor-digital-public-v1",
-  "scriptSignature": "TdaMQoUfKMM/ZZvZ1swxHVf25OmuHpPKlXtb9m2rRDhdbhd5DhFbH9nuMS+tDywK8kIniTbcP5XGgrtHOWo0u9b7zCFjVWrbzZith78TdcdAequLFXKcPFR0c7zq7vMbvec6yusG546nEeXSB1/gnwwaqgZHnXaX9BWUuFpQItw1l1teFPpH6AYI91FG0LKYgw1curiV8xMWeKANAz3pbYuLVcGAztTZX/fa0QZj06SJFRSi90IGd88aYhEqIVIb8GmKyxMDPL895KnwOaKBL3l+Vcsj37ED5+fpfMDaZyAgIfgUjNMR+Z/S57CzrDobqs8zuIh/A4xFBcaf4bFL3A==",
+  "scriptSignature": "Rf0VfFyhlyZnsudzZJ9FUQEyxlEmzyiiJ2NMmMYzPhn7tOWkiQcOQMnUUQOOhnAtHOzn/UNK9VV1W5XIKnp38/2GnI5Wpr0G6H6JbovoJTeVDQwq+qb4omcBsceND1P/ORt/v+twJmx46+T3dL5zIw1nWfPWOxiYr9w8MBrkidmZn/h6MEC1v4SzUDbJPF2hO19KhipM9bfZ4ReyJHlsGDe1mSlheUJ14Jz8cwmcErnDsCyCPX1FlJYUj2fFIH8KXMQxmA3gNqfbISMcMU1vX6bN1aMWVI1pUdbIY9BrZAlWTwadGZRWJDVv2AuzlWUxzgyQ4P4gz9DPZuii0OXK+g==",
   "scriptPublicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3Sc54my3nwLDWO367Ab4J6zfw+7gZtGvSBYbs6zIGMBg3Pu4/R9GbaMnOOgDyGvsJEr0vaPkcyeIgnQB7Lrj9v3T8/ds5kRrVkpj/CRc/z/WJ3wcO2Ea8dNHhMj7BkJktT+Rvk1cLe2NVgrZfmMJg4hB/KirVP7Q6TXUnDwzxSEV1q0mGEcgO+BnU3fErp7Jdiqf1D+7abKqyP07nnkEnmR7YKee89PZfTL/QGTtwXrkt6ux9bL9OJZYDDXqqxLB0y7mrkTPZroZ2GkZbEjQmMJ7xQSysiQvsFaQj/U/lBqlJKOcOQml2xuPiA8FAcPKg9GK0HsRlxS4m+OBk8PDPQIDAQAB",
   "packages": [
     "Http"
@@ -19,6 +19,8 @@
     "www.corridordigital.com",
     "content-cache.corridordigital.com",
     "content.corridordigital.com",
-    "cdn-corridor.protomedia.ninja"
+    "cdn-corridor.protomedia.ninja",
+    "kms.corridordigital.com",
+    "images-b.corridordigital.com"
   ]
 }
